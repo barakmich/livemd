@@ -3,6 +3,9 @@
 *.a
 *.so
 
+# Editor cruft
+*.swp
+
 # Folders
 _obj
 _test
@@ -20,3 +23,5 @@ _cgo_export.*
 _testmain.go
 
 *.exe
+
+livemd
