@@ -158,7 +158,6 @@ func RootFunc(w http.ResponseWriter, r *http.Request) {
 	localToc := make([]string, len(toc))
 	copy(localToc, toc)
 	tocMutex.Unlock()
-	log.Println(localToc)
 	for i, s := range localToc {
 		chop := strings.TrimPrefix(s, path)
 		localToc[i] = "* [" + chop + "](/md" + chop + ")"
