@@ -11,6 +11,7 @@ import (
 	"text/template"
 
 	"github.com/russross/blackfriday"
+	"golang.org/x/net/websocket"
 	fsnotify "gopkg.in/fsnotify.v1"
 )
 
@@ -19,11 +20,16 @@ var SUFFIXES = [3]string{".md", ".mkd", ".markdown"}
 var toc []string
 var tocMutex sync.Mutex
 var rootTmpl *template.Template
+var pageTmpl *template.Template
 var path string
 
 func init() {
 	var err error
 	rootTmpl, err = template.New("root").Parse(rootTemplate)
+	if err != nil {
+		log.Fatal(err)
+	}
+	pageTmpl, err = template.New("page").Parse(pageTemplate)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -65,6 +71,8 @@ func WatcherEventLoop(w *fsnotify.Watcher, done chan bool) {
 			log.Println("Event:", event)
 			// TODO(barakmich): On directory creation, stat path if directory, and watch it.
 			if HasMarkdownSuffix(event.Name) {
+				if event.Op == fsnotify.Write {
+				}
 			}
 
 		case err := <-w.Errors:
@@ -85,6 +93,17 @@ func RootFunc(w http.ResponseWriter, r *http.Request) {
 	tocMkd := strings.Join(localToc, "\n")
 	bytes := blackfriday.MarkdownCommon([]byte(tocMkd))
 	rootTmpl.Execute(w, string(bytes))
+}
+
+func PageFunc(w http.ResponseWriter, r *http.Request) {
+	subpath := strings.TrimPrefix(r.RequestURI, "/md")
+	log.Println("New watcher on ", subpath)
+	pageTmpl.Execute(w, subpath)
+}
+
+func HandleListener(ws *websocket.Conn) {
+	fmt.Println("WEBSOCKET!", ws.Request().RequestURI)
+	ws.Close()
 }
 
 func main() {
@@ -111,5 +130,7 @@ func main() {
 	fmt.Println(toc)
 
 	http.HandleFunc("/", RootFunc)
+	http.HandleFunc("/md/", PageFunc)
+	http.Handle("/ws/", websocket.Handler(HandleListener))
 	http.ListenAndServe(":8080", nil)
 }
