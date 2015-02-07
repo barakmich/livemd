@@ -2,14 +2,13 @@ package main
 
 import (
 	"fmt"
-	_ "html/template"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
-	txttemplate "text/template"
+	"text/template"
 
 	"github.com/russross/blackfriday"
 	fsnotify "gopkg.in/fsnotify.v1"
@@ -18,13 +17,13 @@ import (
 var SUFFIXES = [3]string{".md", ".mkd", ".markdown"}
 
 var toc []string
-var toc_mutex sync.Mutex
-var rootTmpl *txttemplate.Template
+var tocMutex sync.Mutex
+var rootTmpl *template.Template
 var path string
 
 func init() {
 	var err error
-	rootTmpl, err = txttemplate.New("root").Parse(rootTemplate)
+	rootTmpl, err = template.New("root").Parse(rootTemplate)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -48,9 +47,9 @@ func AddWatch(w *fsnotify.Watcher) filepath.WalkFunc {
 			w.Add(path)
 		} else {
 			if HasMarkdownSuffix(path) {
-				toc_mutex.Lock()
+				tocMutex.Lock()
 				toc = append(toc, path)
-				toc_mutex.Unlock()
+				tocMutex.Unlock()
 				log.Println("Found", path)
 				w.Add(path)
 			}
@@ -76,15 +75,15 @@ func WatcherEventLoop(w *fsnotify.Watcher, done chan bool) {
 }
 
 func RootFunc(w http.ResponseWriter, r *http.Request) {
-	toc_mutex.Lock()
+	tocMutex.Lock()
 	localToc := toc[:]
-	toc_mutex.Unlock()
+	tocMutex.Unlock()
 	for i, s := range localToc {
 		s = strings.TrimPrefix(s, path)
 		localToc[i] = "* " + s
 	}
-	tocmkd := strings.Join(localToc, "\n")
-	bytes := blackfriday.MarkdownCommon([]byte(tocmkd))
+	tocMkd := strings.Join(localToc, "\n")
+	bytes := blackfriday.MarkdownCommon([]byte(tocMkd))
 	rootTmpl.Execute(w, string(bytes))
 }
 
@@ -111,7 +110,6 @@ func main() {
 
 	fmt.Println(toc)
 
-	fmt.Println(blackfriday.HTML_TOC)
 	http.HandleFunc("/", RootFunc)
 	http.ListenAndServe(":8080", nil)
 }
