@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -22,6 +22,28 @@ var tocMutex sync.Mutex
 var rootTmpl *template.Template
 var pageTmpl *template.Template
 var path string
+
+type state int
+
+const (
+	None state = iota
+	Open
+	Close
+)
+
+type Listener struct {
+	File   string
+	Socket *websocket.Conn
+	State  state
+}
+
+type Update struct {
+	File string
+}
+
+type BrowserMsg struct {
+	Markdown string
+}
 
 func init() {
 	var err error
@@ -64,17 +86,18 @@ func AddWatch(w *fsnotify.Watcher) filepath.WalkFunc {
 	}
 }
 
-func WatcherEventLoop(w *fsnotify.Watcher, done chan bool) {
+func WatcherEventLoop(w *fsnotify.Watcher, updates chan Update, done chan bool) {
 	for {
 		select {
 		case event := <-w.Events:
-			log.Println("Event:", event)
+			//			log.Println("Event:", event)
 			// TODO(barakmich): On directory creation, stat path if directory, and watch it.
 			if HasMarkdownSuffix(event.Name) {
+				subfile := strings.TrimPrefix(event.Name, path)
 				if event.Op == fsnotify.Write {
+					updates <- Update{subfile}
 				}
 			}
-
 		case err := <-w.Errors:
 			log.Println("Error:", err)
 			done <- true
@@ -82,17 +105,73 @@ func WatcherEventLoop(w *fsnotify.Watcher, done chan bool) {
 	}
 }
 
+func writeFileForListener(l Listener) {
+	var data []byte
+	file, err := os.Open(filepath.Join(path, l.File))
+	if err != nil {
+		data = []byte("Error: " + err.Error())
+	}
+	filebytes, err := ioutil.ReadAll(file)
+	if err != nil {
+		data = []byte("Error: " + err.Error())
+	}
+	data = blackfriday.MarkdownCommon(filebytes)
+	var msg BrowserMsg
+	msg.Markdown = string(data)
+	err = websocket.JSON.Send(l.Socket, msg)
+	if err != nil {
+		log.Println("Error sending message:", err)
+	}
+}
+
+func UpdateListeners(updates chan Update, listeners chan Listener) {
+	currentListeners := make([]Listener, 0)
+	for {
+		select {
+		case listener := <-listeners:
+			if listener.State == Open {
+				log.Println("New listener on", listener.File)
+				currentListeners = append(currentListeners, listener)
+				writeFileForListener(listener)
+			}
+			if listener.State == Close {
+				for i, l := range currentListeners {
+					if l.Socket == listener.Socket {
+						log.Println("Deregistering Listener")
+						currentListeners = append(currentListeners[:i], currentListeners[i+1:]...)
+					}
+				}
+			}
+		case update := <-updates:
+			log.Println("Update on", update.File)
+			for _, l := range currentListeners {
+				if update.File == l.File {
+					writeFileForListener(l)
+				}
+			}
+		}
+	}
+}
+
 func RootFunc(w http.ResponseWriter, r *http.Request) {
 	tocMutex.Lock()
-	localToc := toc[:]
+	localToc := make([]string, len(toc))
+	copy(localToc, toc)
 	tocMutex.Unlock()
+	log.Println(localToc)
 	for i, s := range localToc {
-		s = strings.TrimPrefix(s, path)
-		localToc[i] = "* " + s
+		chop := strings.TrimPrefix(s, path)
+		localToc[i] = "* [" + chop + "](/md" + chop + ")"
 	}
 	tocMkd := strings.Join(localToc, "\n")
 	bytes := blackfriday.MarkdownCommon([]byte(tocMkd))
 	rootTmpl.Execute(w, string(bytes))
+}
+
+func CSSFunc(css string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(css))
+	}
 }
 
 func PageFunc(w http.ResponseWriter, r *http.Request) {
@@ -101,9 +180,17 @@ func PageFunc(w http.ResponseWriter, r *http.Request) {
 	pageTmpl.Execute(w, subpath)
 }
 
-func HandleListener(ws *websocket.Conn) {
-	fmt.Println("WEBSOCKET!", ws.Request().RequestURI)
-	ws.Close()
+func HandleListener(listeners chan Listener) func(ws *websocket.Conn) {
+	return func(ws *websocket.Conn) {
+		subpath := strings.TrimPrefix(ws.Request().RequestURI, "/ws")
+		listeners <- Listener{subpath, ws, Open}
+		var closeMessage string
+		err := websocket.Message.Receive(ws, &closeMessage)
+		if err != nil && err.Error() != "EOF" {
+			log.Println("Error before close:", err)
+		}
+		listeners <- Listener{subpath, ws, Close}
+	}
 }
 
 func main() {
@@ -119,7 +206,8 @@ func main() {
 	defer watcher.Close()
 
 	done := make(chan bool)
-	go WatcherEventLoop(watcher, done)
+	updates := make(chan Update)
+	go WatcherEventLoop(watcher, updates, done)
 
 	log.Println("Watching directory", path)
 	err = filepath.Walk(path, AddWatch(watcher))
@@ -127,10 +215,12 @@ func main() {
 		log.Fatal(err)
 	}
 
-	fmt.Println(toc)
+	listeners := make(chan Listener)
+	go UpdateListeners(updates, listeners)
 
 	http.HandleFunc("/", RootFunc)
 	http.HandleFunc("/md/", PageFunc)
-	http.Handle("/ws/", websocket.Handler(HandleListener))
+	http.HandleFunc("/github.css", CSSFunc(githubCss))
+	http.Handle("/ws/", websocket.Handler(HandleListener(listeners)))
 	http.ListenAndServe(":8080", nil)
 }
