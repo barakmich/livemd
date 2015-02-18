@@ -1,6 +1,8 @@
 package main
 
 import (
+	"flag"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -24,6 +26,9 @@ var pageTmpl *template.Template
 var path string
 
 type state int
+
+var host = flag.String("host", "", "Host IP to listen on (default: \"\" == 127.0.0.1)")
+var port = flag.String("port", "8080", "Port to listen on (default: 8080)")
 
 const (
 	None state = iota
@@ -193,9 +198,10 @@ func HandleListener(listeners chan Listener) func(ws *websocket.Conn) {
 }
 
 func main() {
+	flag.Parse()
 	path = os.Getenv("PWD")
-	if len(os.Args) > 1 {
-		path = os.Args[1]
+	if len(flag.Args()) > 1 {
+		path = flag.Arg(1)
 	}
 
 	watcher, err := fsnotify.NewWatcher()
@@ -221,5 +227,5 @@ func main() {
 	http.HandleFunc("/md/", PageFunc)
 	http.HandleFunc("/github.css", CSSFunc(githubCss))
 	http.Handle("/ws/", websocket.Handler(HandleListener(listeners)))
-	http.ListenAndServe(":8080", nil)
+	http.ListenAndServe(fmt.Sprintf("%s:%s", *host, *port), nil)
 }
