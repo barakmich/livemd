@@ -29,6 +29,7 @@ type state int
 
 var host = flag.String("host", "", "Host IP to listen on (default: \"\" == 127.0.0.1)")
 var port = flag.String("port", "8080", "Port to listen on (default: 8080)")
+var maxdepth = flag.Int("maxdepth", 0, "max tree depth to traverse, 0 == infinite")
 
 const (
 	None state = iota
@@ -69,26 +70,6 @@ func HasMarkdownSuffix(s string) bool {
 		}
 	}
 	return false
-}
-
-func AddWatch(w *fsnotify.Watcher) filepath.WalkFunc {
-	return func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			w.Add(path)
-		} else {
-			if HasMarkdownSuffix(path) {
-				tocMutex.Lock()
-				toc = append(toc, path)
-				tocMutex.Unlock()
-				log.Println("Found", path)
-				w.Add(path)
-			}
-		}
-		return nil
-	}
 }
 
 func WatcherEventLoop(w *fsnotify.Watcher, updates chan Update, done chan bool) {
@@ -196,6 +177,40 @@ func HandleListener(listeners chan Listener) func(ws *websocket.Conn) {
 		listeners <- Listener{subpath, ws, Close}
 	}
 }
+func GetPathDepth(path string) int {
+	return strings.Count(filepath.Clean(path), string(os.PathSeparator))
+}
+
+func AddWatch(w *fsnotify.Watcher, rootpath string) filepath.WalkFunc {
+	rootPathDepth := GetPathDepth(rootpath)
+
+	return func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// a maxdepth of 0 means inifinite traversal
+		if *maxdepth > 0 {
+			currentDepth := GetPathDepth(path)
+			if (currentDepth - rootPathDepth) > *maxdepth {
+				return filepath.SkipDir
+			}
+		}
+
+		if info.IsDir() {
+			w.Add(path)
+		} else {
+			if HasMarkdownSuffix(path) {
+				tocMutex.Lock()
+				toc = append(toc, path)
+				tocMutex.Unlock()
+				log.Println("Found", path)
+				w.Add(path)
+			}
+		}
+		return nil
+	}
+}
 
 func main() {
 	flag.Parse()
@@ -215,8 +230,8 @@ func main() {
 	go WatcherEventLoop(watcher, updates, done)
 
 	log.Println("Watching directory", path)
-	err = filepath.Walk(path, AddWatch(watcher))
-	if err != nil {
+	err = filepath.Walk(path, AddWatch(watcher, path))
+	if err != nil && err != filepath.SkipDir {
 		log.Fatal(err)
 	}
 
