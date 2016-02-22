@@ -12,9 +12,9 @@ import (
 	"sync"
 	"text/template"
 
+	"github.com/rjeczalik/notify"
 	"github.com/russross/blackfriday"
 	"golang.org/x/net/websocket"
-	fsnotify "gopkg.in/fsnotify.v1"
 )
 
 var SUFFIXES = [3]string{".md", ".mkd", ".markdown"}
@@ -71,48 +71,32 @@ func HasMarkdownSuffix(s string) bool {
 	return false
 }
 
-func AddWatch(w *fsnotify.Watcher) filepath.WalkFunc {
+func AddWatch(c chan notify.EventInfo) filepath.WalkFunc {
 	return func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
 		if info.IsDir() {
-			w.Add(path)
-		} else {
-			if HasMarkdownSuffix(path) {
-				tocMutex.Lock()
-				toc = append(toc, path)
-				tocMutex.Unlock()
-				log.Println("Found", path)
-				w.Add(path)
+			err = notify.Watch(path, c, notify.Write)
+			if err != nil {
+				fmt.Println("err", err)
+				return err
+			}
+		} else if HasMarkdownSuffix(path) {
+			tocMutex.Lock()
+			toc = append(toc, path)
+			tocMutex.Unlock()
+			log.Println("Found", path)
+			err = notify.Watch(path, c, notify.Write)
+			if err != nil {
+				fmt.Println("err", err)
+				return err
 			}
 		}
 		return nil
 	}
 }
 
-func WatcherEventLoop(w *fsnotify.Watcher, updates chan Update, done chan bool) {
-	for {
-		select {
-		case event := <-w.Events:
-			//			log.Println("Event:", event)
-			// TODO(barakmich): On directory creation, stat path if directory, and watch it.
-			if HasMarkdownSuffix(event.Name) {
-				subfile := strings.TrimPrefix(event.Name, path)
-				if event.Op == fsnotify.Write {
-					updates <- Update{subfile}
-				}
-			}
-		case err := <-w.Errors:
-			log.Println("Error:", err)
-			done <- true
-		}
-	}
-}
-
 func writeFileForListener(l Listener) {
 	var data []byte
-	file, err := os.Open(filepath.Join(path, l.File))
+	file, err := os.Open(l.File)
 	if err != nil {
 		data = []byte("Error: " + err.Error())
 	}
@@ -129,12 +113,14 @@ func writeFileForListener(l Listener) {
 	}
 }
 
-func UpdateListeners(updates chan Update, listeners chan Listener) {
+func UpdateListeners(updates chan notify.EventInfo, listeners chan Listener) {
 	currentListeners := make([]Listener, 0)
 	for {
 		select {
 		case listener := <-listeners:
 			if listener.State == Open {
+				dir, _ := os.Getwd()
+				listener.File = filepath.Join(dir, listener.File)
 				log.Println("New listener on", listener.File)
 				currentListeners = append(currentListeners, listener)
 				writeFileForListener(listener)
@@ -148,9 +134,9 @@ func UpdateListeners(updates chan Update, listeners chan Listener) {
 				}
 			}
 		case update := <-updates:
-			log.Println("Update on", update.File)
 			for _, l := range currentListeners {
-				if update.File == l.File {
+				if update.Path() == l.File {
+					log.Println("Update on", update.Path())
 					writeFileForListener(l)
 				}
 			}
@@ -204,18 +190,10 @@ func main() {
 		path = flag.Arg(1)
 	}
 
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer watcher.Close()
-
-	done := make(chan bool)
-	updates := make(chan Update)
-	go WatcherEventLoop(watcher, updates, done)
+	updates := make(chan notify.EventInfo)
 
 	log.Println("Watching directory", path)
-	err = filepath.Walk(path, AddWatch(watcher))
+	err := filepath.Walk(path, AddWatch(updates))
 	if err != nil {
 		log.Fatal(err)
 	}

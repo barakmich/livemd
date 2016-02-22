@@ -9,7 +9,7 @@ I also didn't want to `npm install` anything. So I wrote a server in Go, with li
 
 * [github.com/russross/blackfriday](https://github.com/russross/blackfriday)
 *	[golang.org/x/net/websocket](https://golang.org/x/net/websocket)
-*	[gopkg.in/fsnotify.v1](https://github.com/go-fsnotify/fsnotify)
+*   [github.com/rjeczalik/notify](https://github.com/rjeczalik/notify)
 
 ## Usage
 ```
